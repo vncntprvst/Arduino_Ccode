@@ -13,8 +13,7 @@
 //define functions;
   void readbuttons();
   void actonbuttons();
-  void moverail(int speed, int duration);
-  void rotatestim();
+  void moverail(int speed, uint8_t direction, int duration);
   void getdatafromPC();
   boolean trialready();
   void trialwrapup(int duration);
@@ -24,7 +23,9 @@
   void reward(Adafruit_DCMotor* solenoid,int dur);
   void sendtoPC(int trialNum, int tType, int trialResult, int rewCount);
   void soundout(int instruct);
-  void rotatepanel();
+  boolean isRailRetracted();
+  void trialselection();
+  void rotatepanel(long relativePos, int rotDirection,  int pauseDuration);
 
 // Stepper 1: rail (controlled through ST-M5045)
   #define stepPin_SM1 9
@@ -32,8 +33,8 @@
   #define enablePin_SM1  10
   #define buttonFWpin 11
   #define buttonBWpin  12
-  #define motorSpeed 1200 // max 1800, base 1200 (ST-M5045 set at 400 step per rev, 2 microsteps)
-  #define motorAccel 10000 // 15000 for speed = 1800, 10000 for 12000
+  #define railMotorSpeed 1200
+  #define railMotorAccel 10000
   unsigned long startLinearMoveTime = 0;
   AccelStepper railStepper(1,stepPin_SM1,directionPin_SM1);
 
@@ -43,11 +44,14 @@
   #define sleepPin_SM2 4
   #define enablePin_SM2  5
   //#define resetPin 5
+  #define stepsPerRev_SM2 200 // Stepper motor - NEMA-17 - 200 steps/rev, https://www.adafruit.com/product/324
+  #define panelStepDifferential 40 // 5 stims=> stepsPerRev_SM2/5
+  #define stimMotorSpeed 2000 // max 1800, base 1200 (ST-M5045 set at 400 step per rev, 2 microsteps)
+  #define stimMotorAccel 500 // 15000 for speed = 1800, 10000 for 12000
   AccelStepper stimStepper(1,stepPin_SM2,directionPin_SM2);
 
 // Create the motor shield object with the default I2C address
   Adafruit_MotorShield AFMS = Adafruit_MotorShield();
-
 // reward solenoid on port M1
   Adafruit_DCMotor *rewardSolenoid = AFMS.getMotor(1);
 // Air puff solenoid on port M2
@@ -60,38 +64,42 @@
 
 // lick sensor variables
   #define piezoPin A0
-  #define lickTTLPin 13
+  #define lickTTLPin 14
   #define sampleWindowSize 600
   #define vibThd 20
-  // unsigned short int baseline = 1;
-  unsigned short int piezoVal;
-  short int touchDetect = 0;
-  unsigned short int maxDiff;
-  int lickCount = 0;
+// byte baseline = 1;
+  unsigned int piezoVal; // max 1024
+  unsigned int maxDiff;
+  unsigned int lickCount = 0;
 
 // session and trial variables
   #define trialTTLPin 12
   unsigned long trialMillis = 0;
-  byte TrialSelectMode=0; // 0 -> random selection,
-  //1 -> preset from computer, 2 -> block trial preset (see rotatepanel).
-  int BlockSize=15; // this is the number of trials in each block
-  int BlockPos=1; // where we are in the block of trials
+  byte TrialSelectMode=0; // 0 -> randomized trials
+                          // 1 -> trial-by-tria instrucitons from computer
+                          // 2 -> block trial preset (see trialselection).
+  byte BlockSize=15; // this is the number of trials in each block
+  byte BlockPos=1; // where we are in the block of trials
   byte trialType = 0;
   byte SessionStatus[2] = {0, 0}; // 1/ Run [ON/OFF (1/0)] 2/ Reset (1)
   byte trialOutcome=0;
-  int trialCount=0;
-  int rewardCount=0;
-  int Lrewtrig=0;
+  unsigned int trialCount=0;
+  unsigned int TrialInit=0;
+  unsigned int gracePeriod=1000;
+  unsigned int responseWindow=1000;
+  unsigned int rewardCount=0;
   boolean railMovedBack=false;
   boolean stimShuffle=false;
 
 // texture panel definitions
-  int curr_pos=0; // inital panel position, curr_pos < 100 means texture side -> go Left (trial type 1)
-  int next_pos;
+  #define railPosIRpin A1
+  int currentTrialType=0; // inital panel position
+  int nextTrialType;
   byte rot_seq; // number of panel rotations
+  int rotationAngle;
 
 // audio definitions
-  #define soundTriggerPin 11 // audio output
+  #define soundTriggerPin 16 // audio output
 
 // other defs
   // #define ledPin 13
@@ -105,31 +113,26 @@
 
 void setup() {
   Serial.begin(57600);
+  randomSeed(analogRead(0));
+  //shield controls
+  pinMode(buttonFWpin, INPUT);
+  pinMode(buttonBWpin, INPUT);
+  // rail SM setup
   pinMode(directionPin_SM1, OUTPUT);
   pinMode(stepPin_SM1, OUTPUT);
   pinMode(enablePin_SM1, OUTPUT);
-  pinMode(buttonFWpin, INPUT);
-  pinMode(buttonBWpin, INPUT);
-  //
-  railStepper.setMaxSpeed(motorSpeed);
-  railStepper.setSpeed(motorSpeed);
-  railStepper.setAcceleration(motorAccel);
-  digitalWrite(enablePin_SM1, HIGH); // enable output
-  //
-  //  DDRD = DDRD | B11111100;  // sets pins 2 to 7 as outputs
-  //                    // without changing the value of pins 0 & 1 (serial com)
-  //same as sequence below:
+  railStepper.setMaxSpeed(railMotorSpeed);
+  railStepper.setSpeed(railMotorSpeed);
+  railStepper.setAcceleration(railMotorAccel);
+  digitalWrite(enablePin_SM1, LOW); // disable output
+  // stimulus panel - SM setup
   pinMode(directionPin_SM2, OUTPUT);
   pinMode(stepPin_SM2, OUTPUT);
   pinMode(sleepPin_SM2, OUTPUT);
-  //  pinMode(resetPin, OUTPUT);
   pinMode(enablePin_SM2, OUTPUT);
-  //
-  stimStepper.setMaxSpeed(2000);
-  stimStepper.setAcceleration(500);
+  stimStepper.setMaxSpeed(stimMotorSpeed);
+  stimStepper.setAcceleration(stimMotorAccel);
 
-  //  PORTD = PORTD | B00010000;
-  //  same as below:
   digitalWrite(sleepPin_SM2, HIGH);
   //  digitalWrite(resetPin, HIGH);
   digitalWrite(enablePin_SM2, LOW);
@@ -146,11 +149,10 @@ void loop() {
   if(SessionStatus[1] == 1){ // reset counters
       //    arrayinit();
       trialCount=0;
+      lickCount=0;
       rewardCount=0;
-      Lrewtrig=0;
       // release step motors
     }
-
   //SessionStatus[0]=1;
   while (SessionStatus[0] == 0){ // session is OFF! Standby
    readbuttons();
@@ -167,50 +169,61 @@ void loop() {
   // puffSolenoid->run(RELEASE);
 
   if (SessionStatus[0] == 1){ // session is ON!
-    // check panel has been retracted and shuffled
-    if (trialready() ==  true) {
+    if (trialready() ==  true) { // check that panel has been retracted and shuffled
       // start trial!
-      trialMillis = millis();
-      sendTTL(trialTTLPin,1); // send TTL : begin trial
-      trialCount=trialCount+1; //increment trial number
-      // sendToPC(trialCount,int(trialType),rewardCount);
-      // start moving panel forward
-      digitalWrite(enablePin_SM1, HIGH);
-      digitalWrite(directionPin_SM1, LOW);
-      moverail(motorSpeed,1000);
-      // listen for licks
-      maxDiff = maxdiffanalog(); //peakAnalog();
-      if (maxDiff>vibThd){
-        sendTTL(lickTTLPin,0);
-        lickCount += 1;
+      if (TrialInit==0){ // initialize on first pass
+        trialMillis = millis();
+        sendTTL(trialTTLPin,1); // send TTL : begin trial
+        trialCount=trialCount+1; //increment trial number
+        // sendToPC(trialCount,int(trialType),rewardCount);
+        // start moving panel forward
+        moverail(railMotorSpeed,LOW,1000); // move panel to present stimulus
+        soundout(2); //
+        TrialInit=1;
+      } else {
+        // listen for licks
+        maxDiff = maxdiffanalog(); //peakAnalog();
+        if (maxDiff>vibThd){
+          if ((abs(currentMillis - trialMillis) <= gracePeriod)
+            ||  (abs(currentMillis - trialMillis) > (gracePeriod + responseWindow))) {
+          // Grace period:
+          // 0.5–1.5 s from onset of panel movement where
+          // licking does not signal the response outcome.
+          sendTTL(lickTTLPin,1);
+        }
+        if ((abs(currentMillis - trialMillis) > gracePeriod)
+          &&  (abs(currentMillis - trialMillis) <= (gracePeriod + responseWindow))) {
+          sendTTL(lickTTLPin,0);
+          // Response window: 1s.
+          lickCount += 1;
+         }
        }
-       // check trial rules
-       if (trialType == 1) { // go trial
+       if ((abs(currentMillis - trialMillis) > (gracePeriod + responseWindow))) {
+         // end of response window: check trial rules
          if (lickCount > 0) {// has licked
-           rewardCount=rewardCount+1;
-           reward(rewardSolenoid,40);
-           trialOutcome = 1; // "hit"
+           if (trialType == 1) { // go trial
+             rewardCount=rewardCount+1;
+             reward(rewardSolenoid,40);
+             trialOutcome = 1; // "hit"
+           } else { // no-go trial
+              trialOutcome = 3; // "false alarm!"" :p
+           }
          } else { // no lick
-           trialOutcome = 2; // "miss" ... pwon pwon pwon
+           if (trialType ==1) { // go trial
+             rewardCount=rewardCount+1;
+             reward(rewardSolenoid,40);
+             trialOutcome = 2; // "correct rejection" yeah !!
+           } else { // no-go trial
+             trialOutcome = 4; // "miss" ... pwon pwon pwon
+           }
          }
-       } else { // no-go trial
-         if (lickCount > 0) { // has licked
-           trialOutcome = 3; // "false alarm!"" :p
-         } else {
-           rewardCount=rewardCount+1;
-           reward(rewardSolenoid,40);
-           trialOutcome = 4; // "correct rejection" yeah !!
-         }
-       }
-      sendtoPC(trialCount,int(trialType),int(trialOutcome),rewardCount); // result of current trial
-      trialwrapup(2000);
-
-      sendTTL(trialTTLPin,0); // end of trial
-
+        sendtoPC(trialCount,int(trialType),int(trialOutcome),rewardCount); // result of current trial
+        trialwrapup(2000);
+        sendTTL(trialTTLPin,0); // end of trial
+        }
+      }
     }
-
   }
-
 }
 
 void readbuttons() {
@@ -238,15 +251,18 @@ void readbuttons() {
 void actonbuttons() {
  if (railControl == true) {
    digitalWrite(enablePin_SM1, HIGH);
+   // adjusting initial AP location
    if (buttonFWpressed == true) {
-     digitalWrite(directionPin_SM1, LOW);
-     moverail(motorSpeed,100); // adjusting initial location
+    //  digitalWrite(directionPin_SM1, LOW);
+     moverail(railMotorSpeed,LOW,100);
    } else if (buttonBWpressed == true) {
-      digitalWrite(directionPin_SM1, HIGH);
-      moverail(-motorSpeed,100); // adjusting initial location
+      // digitalWrite(directionPin_SM1, HIGH);
+      moverail(-railMotorSpeed,HIGH,100);
     }
  }
  if (initialization == true) {
+   // Define current panel angle as 0
+   stimStepper.setCurrentPosition(0);
    // set up first trial
     if (buttonFWpressed == true) {
       trialwrapup(2000);
@@ -259,43 +275,17 @@ void actonbuttons() {
    }
 }
 
-void moverail(float speed, int duration) {
+void moverail(float speed, uint8_t direction, int duration) {
  // railMotion = true;
+ digitalWrite(directionPin_SM1, direction);
+ digitalWrite(enablePin_SM1, HIGH);
  startLinearMoveTime=millis();
  while ((startLinearMoveTime+duration)>millis()){
    railStepper.setSpeed(speed);
    railStepper.runSpeed();
  }
+ digitalWrite(enablePin_SM1, LOW);
  // railMotion = false;
-}
-
-void rotatestim() {
-  // if (curr_pos==0){ //initialize random starting panel position
-  //   //        Serial.println("initialize random starting panel position");
-  //     panelrotate();
-  //     //        Serial.println(trialType);
-  // }
-
-
-  stimRotation = true ;
-  stimStepper.moveTo(100);
-  while (stimStepper.currentPosition() != 50) // Full speed up to 300
-    stimStepper.run();
-    stimStepper.stop(); // Stop as fast as possible: sets new target
-    stimStepper.runToPosition();
-    // Now stopped after quickstop
-    //delay(500);
-
-    // Now go backwards
-  stimStepper.moveTo(-100);
-  while (stimStepper.currentPosition() != -50) // Full speed basck to 0
-    stimStepper.run();
-    stimStepper.stop(); // Stop as fast as possible: sets new target
-    stimStepper.runToPosition();
-    // Now stopped after quickstop
-
-    //  digitalWrite(sleepPin_SM2, LOW);
-  stimRotation = false ;
 }
 
 boolean trialready() {
@@ -314,7 +304,7 @@ int cumSumAnalog() {
   int cumVal = analogRead(piezoPin); // analogRead(piezoPin);
   for (int inc=0; inc < 9; inc++ ){
       //      piezoVal=analogRead(piezoPin);
-        cumVal= cumVal + analogRead(piezoPin);
+      cumVal= cumVal + analogRead(piezoPin);
         //      if (piezoArray[0] > piezoVal) {
         //        piezoArray[0]=piezoVal;
         //        }
@@ -331,22 +321,32 @@ void sendTTL(int TTLpin, int instruct){
   delay(25);
   digitalWrite(TTLpin, LOW);
   switch (instruct) {
+    case 0:
+    // that's it
     case 1:
-    // trial initiation: 2 TTL
+    // 2 TTL pulse
     delay(25);
     digitalWrite(TTLpin, HIGH);
     delay(25);
     digitalWrite(TTLpin, LOW);
     break;
     case 2:
-  // that's it
+  // one more
+    delay(25);
+    digitalWrite(TTLpin, HIGH);
+    delay(25);
+    digitalWrite(TTLpin, LOW);
+    delay(25);
+    digitalWrite(TTLpin, HIGH);
+    delay(25);
+    digitalWrite(TTLpin, LOW);
     break;
   }
 }
 
 int maxdiffanalog(){
-  unsigned short int maxVal=0;
-  unsigned short int minVal=1024;
+  unsigned int maxVal=0;
+  unsigned int minVal=1024;
 
   for(int i = 0; i < sampleWindowSize ; ++i){
     piezoVal = analogRead(piezoPin);
@@ -359,11 +359,11 @@ int maxdiffanalog(){
 void reward(Adafruit_DCMotor* solenoid,int dur){
   solenoid->setSpeed(255);
   solenoid->run(FORWARD);
-//    for (int dec=200; dec>170; dec-=decrease) { //max 255
-//    solenoid->setSpeed(dec);
-//    delay(15);
-//    Serial.println(dec);
-//   }
+  //    for (int dec=200; dec>170; dec-=decrease) { //max 255
+  //    solenoid->setSpeed(dec);
+  //    delay(15);
+  //    Serial.println(dec);
+  //   }
  delay(dur);
  solenoid->run(RELEASE); // cut power to motor
 }
@@ -387,44 +387,18 @@ void sendtoPC(int trialNum, int tType, int trialResult, int rewCount) {
   Serial.println(",");
 }
 
-void trialwrapup(int timeout){ // needs to happen after sendToPC() command
-  if (TrialSelectMode==2){ // time to move trial position one up (ie, setting up next trial type)
-    BlockPos+=1;
-    if (BlockPos<=BlockSize){
-      trialType=1;
-    } else if ((BlockPos>BlockSize) && (BlockPos<=2*BlockSize)){
-      trialType=2;
-    }
-    if (BlockPos==2*BlockSize){
-      BlockPos=0;
-    }
-//    Serial.print("End of trial. BlockPos moved to ");
-//    Serial.println(BlockPos);
-//    Serial.print("trialType = ");
-//    Serial.println(trialType);
-  }
-  digitalWrite(enablePin_SM1, HIGH);
-  digitalWrite(directionPin_SM1, LOW);
-  moverail(motorSpeed,1000);
-  soundout(1); // white noise mask
-  rotatepanel(); // set for next trial
-
-  // refractory period
-  delay(timeout); // timeout to leave time for 2s white noise + extra timeout if wrong trial
-}
-
 void soundout(int instruct){
-//HIGH triggers trinkets listening
-//Serial.println("TTL out");
+  //HIGH triggers trinkets listening
+  //Serial.println("TTL out");
   switch (instruct) {
     // both cases should total 10ms
     case 1:
     // white noise
       digitalWrite(soundTriggerPin, HIGH); // trigger
-// NB:
-// if control PlayTone enabled in WhiteNoise_USbeep
-// need to add a total of 10ms (or control beep's duration)
-// to wait for if statment
+      // Nota Bene:
+      // if control PlayTone enabled in WhiteNoise_USbeep
+      // need to add a total of 10ms (or control beep's duration)
+      // to wait for if statment
       delay(2);
       digitalWrite(soundTriggerPin, LOW); // White noise
       delay(8);
@@ -443,65 +417,80 @@ void soundout(int instruct){
    }
 }
 
-void rotatepanel(){
+void trialwrapup(int timeout){ // needs to happen after sendToPC() command
+  if (TrialSelectMode==2){ // block trials
+    // time to move trial position one up (ie, setting up next trial type)
+    BlockPos++;
+    if (BlockPos>BlockSize){
+      trialType++;
+    }
+    if (trialType>5){
+      trialType=1;
+    }
+  }
+  soundout(1); // white noise mask
+  moverail(railMotorSpeed, HIGH, 1000); // HIGH = retract panel
+  while (isRailRetracted()==false) {
+    delay(1);
+  }
+  trialselection(); // set for next trial
+
+  // refractory period
+  delay(timeout); // timeout to leave time for 2s white noise + extra timeout if wrong trial
+}
+
+boolean isRailRetracted() {
+  if (digitalRead(railPosIRpin) == HIGH) {
+    return false;
+  } else {
+    return true;
+  }
+}
+
+void trialselection(){
   // Rotate panel for next trial
   if (TrialSelectMode==0){ // random rotation
-    next_pos = random(1,201); // random number between 1 and 200 (included)
-    if (next_pos<101){
-      trialType=1;
-      // Serial.print("panelrotate says trialType is ");
-      // Serial.println(trialType);
-    } else {
-      trialType=2;
-      // Serial.print("panelrotate says trialType is ");
-      // Serial.println(trialType);
-    }
-//   else if (TrialSelectMode==1)  //instructions from computer
+    nextTrialType = random(1,6);
+  } else if (TrialSelectMode==1) {
+     //instructions from computer
   } else if (TrialSelectMode==2) {
-      if (trialType==1){// current trial within first block type
-         next_pos = random(1,101);
-    } else if (trialType==2){
-         next_pos = random(101,201);
-    }
+    // nextTrialType stays the same until it reaches end of block
   }
 
-//  Serial.print("panelrotate next pos ");
-//  Serial.println(next_pos);
-  rot_seq = random(200); // random number between 0 and 1
-//  Serial.print("panelrotate rot seq ");
-//  Serial.println(rot_seq);
+  //  Serial.print("panelrotate next pos ");
+  //  Serial.println(nextTrialType);
+  rot_seq = random(0,2); // random number between 0 and 1
+  //  Serial.print("panelrotate rot seq ");
+  //  Serial.println(rot_seq);
 
-  if (((curr_pos < 101) && (next_pos < 101)) || ((curr_pos > 100) && (next_pos > 100))){
-    if (rot_seq < 100 ) {
-//      Serial.println("Rotate CW 1/4");
-      // TexturePanelStepper->step(50, FORWARD, DOUBLE);
-      delay(100);
-//      Serial.println("Rotate CCW 1/4");
-    //  TexturePanelStepper->step(50, BACKWARD, DOUBLE);
-    } else {
-//      Serial.println("Rotate CCW 1/4");
-      // TexturePanelStepper->step(50, BACKWARD, DOUBLE);
-      delay(100);
-//      Serial.println("Rotate CW 1/4");
-      // TexturePanelStepper->step(50, FORWARD, DOUBLE);
+// move to new stim
+ // each trial type corresponds to an angle
+ // 1 /  2  / 3  /  4  /  5
+ // 0 / 40 / 80 / 120 / 160 (for 5 stim panels and 200 steps/rev
+
+    if (rot_seq == 0) {
+      rotationAngle=stepsPerRev_SM2-(panelStepDifferential * (currentTrialType-nextTrialType));
+      if (rotationAngle<stepsPerRev_SM2){
+        rotationAngle=rotationAngle+stepsPerRev_SM2;
+      }
+      // move over one turn to target followed by one full turn
+        rotatepanel(rotationAngle + stepsPerRev_SM2, 1, 50);
+    } else { // same but counterclockwise
+      rotationAngle=(panelStepDifferential * (nextTrialType-currentTrialType))-stepsPerRev_SM2;
+      if (rotationAngle>-stepsPerRev_SM2){
+        rotationAngle=rotationAngle-stepsPerRev_SM2;
+      }
+      rotatepanel(rotationAngle - stepsPerRev_SM2 , 1, 0);
     }
-  } else { //present different texture
-    if (rot_seq < 100 ) {
-//      Serial.println("Rotate CCW 1/4");
-      // TexturePanelStepper->step(50, BACKWARD, DOUBLE);
-      delay(100);
-//      Serial.println("Rotate CCW 1/4");
-      // TexturePanelStepper->step(50, BACKWARD, DOUBLE);
-    } else {
-//      Serial.println("Rotate CW 1/4");
-      // TexturePanelStepper->step(50, FORWARD, DOUBLE);
-      delay(100);
-//      Serial.println("Rotate CW 1/4");
-      // TexturePanelStepper->step(50, FORWARD, DOUBLE);
-    }
-  }
-//    TexturePanelStepper->release();
-  curr_pos = next_pos;
-  // Serial.print("curr_pos is now ");
-  // Serial.println(curr_pos);
+
+  //   digitalWrite(sleepPin_SM2, LOW);
+  currentTrialType = nextTrialType;
+  // Serial.print("currentTrialType is now ");
+  // Serial.println(currentTrialType);
+}
+
+void rotatepanel(long relativePos, int rotDirection,  int pauseDuration){
+  stimStepper.move(relativePos * rotDirection);
+  stimStepper.runToPosition();
+  delay(pauseDuration);
 }
