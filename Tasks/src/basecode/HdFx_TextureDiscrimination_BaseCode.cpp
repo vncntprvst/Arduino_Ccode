@@ -9,6 +9,8 @@
 #include <Wire.h> // for I2C
 #include <Adafruit_MotorShield.h>
 #include <Adafruit_PWMServoDriver.h>
+#include <Filters.h>
+#include <Average.h>
 
 //define functions;
   void readbuttons();
@@ -16,15 +18,15 @@
   void moverail(int speed, unsigned char direction, int duration);
   void getdatafromPC();
   void parsedata();
-  boolean trialready();
+  bool trialready();
   void trialwrapup(int duration);
   void flushTubing();
   void sendTTL(int TTLpin, int instruct);
-  int maxdiffanalog();
+  bool touchPiezo();
   void reward(Adafruit_DCMotor* solenoid,int dur);
   void sendtoPC(int trialNum, int tType, int trialResult, int rewCount);
   void soundout(int instruct);
-  boolean isRailRetracted();
+  bool isRailRetracted();
   void trialselection();
   void rotatepanel(long relativePos, int rotDirection,  int pauseDuration);
 
@@ -60,14 +62,21 @@
 
 // shield control variables
   #define joyBehaviorPin 19
-  boolean buttonCWpressed = false;
-  boolean buttonCCWpressed = false;
+  bool buttonCWpressed = false;
+  bool buttonCCWpressed = false;
 
 // lick sensor variables
   #define piezoPin A0
   #define lickTTLPin 14
-  #define sampleWindowSize 600
-  #define vibThd 20
+  float filterFrequency = 10.0; // filters out changes faster that 10 Hz.
+  FilterOnePole lowpassFilter( LOWPASS, filterFrequency );  // create a one pole (RC) lowpass filter
+  Average<long> sampleTouch(10);
+  byte cumulativeTouch = 0 ;
+  byte mask  = 15;
+  long centeredVal;
+  long SNR;
+  unsigned long touchTime = 0;
+
 // byte baseline = 1;
   unsigned int piezoVal; // max 1024
   unsigned int maxDiff;
@@ -89,8 +98,8 @@
   unsigned int gracePeriod=1000;
   unsigned int responseWindow=1000;
   unsigned int rewardCount=0;
-  boolean railMovedBack=false;
-  boolean stimShuffle=false;
+  bool railMovedBack=false;
+  bool stimShuffle=false;
 
 // texture panel definitions
   #define railPosIRpin 15
@@ -108,18 +117,18 @@
   const char startMarker = '<';
   const char endMarker = '>';
   byte bytesRecvd = 0;
-  boolean readInProgress = false;
-  boolean newDataFromPC = false;
+  bool readInProgress = false;
+  bool newDataFromPC = false;
 
 // other defs
   // #define ledPin 13
   unsigned long currentMillis = 0;
-  boolean buttonFWpressed = false;
-  boolean buttonBWpressed = false;
-  boolean railControl = false;
-  boolean initialization = false;
-  boolean stimRotation = false;
-  boolean railMotion = false;
+  bool buttonFWpressed = false;
+  bool buttonBWpressed = false;
+  bool railControl = false;
+  bool initialization = false;
+  bool stimRotation = false;
+  bool railMotion = false;
 
 void setup() {
   Serial.begin(57600);
@@ -193,8 +202,7 @@ void loop() {
         trialInit=1;
       } else {
         // listen for licks
-        maxDiff = maxdiffanalog(); //peakAnalog();
-        if (maxDiff>vibThd){
+        if (touchPiezo()){
           if ((abs(currentMillis - trialMillis) <= gracePeriod)
             ||  (abs(currentMillis - trialMillis) > (gracePeriod + responseWindow))) {
           // Grace period:
@@ -299,7 +307,7 @@ void moverail(int speed, unsigned char direction, int duration) {
  // railMotion = false;
 }
 
-boolean trialready() {
+bool trialready() {
   if (trialInit==0) { // only run checks if trial is not ongoing
   // check if panel is retracted
       railMovedBack = isRailRetracted();
@@ -357,16 +365,31 @@ void sendTTL(int TTLpin, int instruct){
   }
 }
 
-int maxdiffanalog(){
-  unsigned int maxVal=0;
-  unsigned int minVal=1024;
-
-  for(int i = 0; i < sampleWindowSize ; ++i){
-    piezoVal = analogRead(piezoPin);
-    minVal = min(minVal, piezoVal);
-    maxVal = max(maxVal, piezoVal);
+bool touchPiezo(){
+  lowpassFilter.input( analogRead( piezoPin ) );
+  centeredVal=abs(lowpassFilter.output()-sampleTouch.mean());
+  sampleTouch.push(centeredVal);
+  //  Serial.print(centeredVal);
+  SNR = sampleTouch.mean()/sampleTouch.stddev();
+  //  Serial.print("\t");
+  //  Serial.println(3*SNR);
+  cumulativeTouch<<=1;
+  if (centeredVal>(5*SNR)){
+    // detect.push(1);
+    cumulativeTouch = cumulativeTouch | 1;
+    //    Serial.println("above SNR");
+  } else {
+    // detect.push(0);
+    cumulativeTouch = cumulativeTouch | 0;
   }
-  return abs(maxVal-minVal);
+  //  Serial.println(cumulativeTouch & mask);
+  if ((cumulativeTouch & mask) == mask && ((millis()-touchTime)>200)){//((detect.mean()*4)>=2) {
+    //  Serial.println(detect.mean());
+    touchTime = millis(); //keep track of time
+    return(true);
+  } else {
+    return(false);
+  }
 }
 
 void reward(Adafruit_DCMotor* solenoid,int dur){
@@ -452,7 +475,7 @@ void trialwrapup(int timeout){ // needs to happen after sendToPC() command
   delay(timeout); // timeout to leave time for 2s white noise + extra timeout if wrong trial
 }
 
-boolean isRailRetracted() {
+bool isRailRetracted() {
   if (digitalRead(railPosIRpin) == HIGH) {
     return false;
   } else {
