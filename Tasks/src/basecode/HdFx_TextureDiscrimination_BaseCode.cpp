@@ -62,8 +62,8 @@
 
 // shield control variables
   #define joyBehaviorPin 19
-  bool buttonCWpressed = false;
-  bool buttonCCWpressed = false;
+  // bool buttonCWpressed = false;
+  // bool buttonCCWpressed = false;
 
 // lick sensor variables
   #define piezoPin A0
@@ -83,6 +83,7 @@
   unsigned int lickCount = 0;
 
 // session and trial variables
+  #define sessionStart 17 // for manual override
   #define trialTTLPin 12
   unsigned long trialMillis = 0;
   byte trialselectMode=0; // 0 -> randomized trials
@@ -176,7 +177,7 @@ void loop() {
   //sessionStatus[0]=1;
   while (sessionStatus[0] == 0){ // session is OFF! Standby
    readbuttons();
-   if (buttonCCWpressed || buttonCWpressed == true) {
+   if ((digitalRead(buttonFWpin) == HIGH) || (digitalRead(buttonBWpin) == HIGH)) {
      actonbuttons();
    } else {
      //  Serial.println("idle");
@@ -250,6 +251,7 @@ void readbuttons() {
  buttonFWpressed = false;
 
  if (digitalRead(joyBehaviorPin) == HIGH) {
+   Serial.println("joyBehavior push button ON");
    railControl = true;
    initialization = false;
  } else {
@@ -257,14 +259,11 @@ void readbuttons() {
    initialization = true;
  }
 
- if (digitalRead(buttonFWpin) == HIGH) {
- // buttonFWpressed = true;
- // Serial.println("Forward");
+ if  (digitalRead(sessionStart) == HIGH) {
+   Serial.println("Manual override. Session is ON!");
+   sessionStatus[0]=1;
  }
- if (digitalRead(buttonBWpin) == HIGH) {
- // buttonBWpressed = true;
- // Serial.println("Backward");
- }
+
 }
 
 void actonbuttons() {
@@ -288,6 +287,7 @@ void actonbuttons() {
     }
    // or flush reward
      while (digitalRead(buttonBWpin) == HIGH){
+       Serial.println("flush tubes");
        readbuttons();
        flushTubing();
      }
