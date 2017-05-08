@@ -1,127 +1,10 @@
 // deliver reward when piezo is deflected
 
-#include <Arduino.h>
-#include <AccelStepper.h>
-#include <Wire.h> // for I2C
-#include <Adafruit_MotorShield.h>
-#include <Adafruit_PWMServoDriver.h>
-#include "utility/Adafruit_MS_PWMServoDriver.h"
-
-//define functions;
-  void readbuttons();
-  void actonbuttons();
-  void moverail(int speed, unsigned char direction, int duration);
-  void getdatafromPC();
-  void parsedata();
-  boolean trialready();
-  void trialwrapup(int duration);
-  void flushTubing();
-  void sendTTL(int TTLpin, int instruct);
-  int maxdiffanalog();
-  void reward(Adafruit_DCMotor* solenoid,int dur);
-  void sendtoPC(int trialNum, int tType, int trialResult, int rewCount);
-  void soundout(int instruct);
-  boolean isRailRetracted();
-  void trialselection();
-  void rotatepanel(long relativePos, int rotDirection,  int pauseDuration);
-  int cumSumAnalog();
-
-// Stepper 1: rail (controlled through ST-M5045)
-  #define stepPin_SM1 9
-  #define directionPin_SM1 8
-  #define enablePin_SM1  10
-  #define buttonFWpin 11
-  #define buttonBWpin  12
-  #define railMotorSpeed 1200
-  #define railMotorAccel 10000
-  unsigned long startLinearMoveTime = 0;
-  AccelStepper railStepper(1,stepPin_SM1,directionPin_SM1);
-
-// Stepper 2: stim (controlled through Polulu )
-  #define stepPin_SM2 3
-  #define directionPin_SM2 2
-  #define sleepPin_SM2 4
-  #define enablePin_SM2  5
-  //#define resetPin 5
-  #define stepsPerRev_SM2 200 // Stepper motor - NEMA-17 - 200 steps/rev, https://www.adafruit.com/product/324
-  #define panelStepDifferential 40 // 5 stims=> stepsPerRev_SM2/5
-  #define stimMotorSpeed 2000 // max 1800, base 1200 (ST-M5045 set at 400 step per rev, 2 microsteps)
-  #define stimMotorAccel 500 // 15000 for speed = 1800, 10000 for 12000
-  AccelStepper stimStepper(1,stepPin_SM2,directionPin_SM2);
-
-// Create the motor shield object with the default I2C address
-  Adafruit_MotorShield AFMS = Adafruit_MotorShield();
-// reward solenoid on port M1
-  Adafruit_DCMotor *rewardSolenoid = AFMS.getMotor(1);
-// Air puff solenoid on port M2
-  Adafruit_DCMotor *puffSolenoid = AFMS.getMotor(2);
-
-// shield control variables
-  #define joyBehaviorPin 19
-  boolean buttonCWpressed = false;
-  boolean buttonCCWpressed = false;
-
-// lick sensor variables
-  #define piezoPin A0
-  #define lickTTLPin 14
-  #define sampleWindowSize 600
-  #define vibThd 20
-// byte baseline = 1;
-  unsigned int piezoVal; // max 1024
-  unsigned int maxDiff;
-  unsigned int lickCount = 0;
-
-// session and trial variables
-  #define sessionStart 17
-  #define trialTTLPin 12
-  unsigned long trialMillis = 0;
-  byte trialselectMode=0; // 0 -> randomized trials
-                          // 1 -> trial-by-tria instrucitons from computer
-                          // 2 -> block trial preset (see trialselection).
-  byte blockSize=15; // this is the number of trials in each block
-  byte blockPos=1; // where we are in the block of trials
-  byte trialType = 0;
-  byte sessionStatus[2] = {0, 0}; // 1/ Run [ON/OFF (1/0)] 2/ Reset (1)
-  byte trialOutcome=0;
-  unsigned int trialCount=0;
-  unsigned int trialInit=0;
-  unsigned int gracePeriod=1000;
-  unsigned int responseWindow=1000;
-  unsigned int rewardCount=0;
-  boolean railMovedBack=false;
-  boolean stimShuffle=false;
-
-// texture panel definitions
-  #define railPosIRpin 15
-  int currentTrialType=0; // inital panel position
-  int nextTrialType;
-  byte rot_seq; // number of panel rotations
-  int rotationAngle;
-
-// audio definitions
-  #define soundTriggerPin 16 // audio output
-
-// GUI-related variables
-  const byte buffSize = 40;
-  char inputBuffer[buffSize];
-  const char startMarker = '<';
-  const char endMarker = '>';
-  byte bytesRecvd = 0;
-  boolean readInProgress = false;
-  boolean newDataFromPC = false;
-
-// other defs
-  // #define ledPin 13
-  unsigned long currentMillis = 0;
-  boolean buttonFWpressed = false;
-  boolean buttonBWpressed = false;
-  boolean railControl = false;
-  boolean initialization = false;
-  boolean stimRotation = false;
-  boolean railMotion = false;
+#include <HdFx_definitions.h>
 
 void setup() {
-  Serial.begin(57600);
+  Serial.begin(115200);
+  // Serial.println("Track 0");
   AFMS.begin();  // create with the default frequency 1.6KHz
   randomSeed(analogRead(0));
   //shield controls
@@ -155,6 +38,7 @@ void setup() {
 
 void loop() {
   // getdatafromPC();
+  // Serial.println("Track 1");
   currentMillis = millis(); //keep track of time
   if(sessionStatus[1] == 1){ // reset counters
       //    arrayinit();
@@ -165,8 +49,8 @@ void loop() {
     }
   //sessionStatus[0]=1;
   while (sessionStatus[0] == 0){ // session is OFF! Standby
-   readbuttons();
-   if (buttonCCWpressed || buttonCWpressed == true) {
+    // Serial.println("Standby");
+   if (readbuttons()) {
      actonbuttons();
    } else {
      //  Serial.println("idle");
@@ -179,57 +63,66 @@ void loop() {
   // puffSolenoid->run(RELEASE);
 
   if (sessionStatus[0] == 1){ // session is ON!
-    piezoVal = cumSumAnalog(); //peakAnalog();
-    Serial.println(piezoVal);
-    //    float piezoV = piezoADC / 1023.0 * 5.0;
-    //    Serial.println(piezoV); // Print the voltage.
-
-    if (piezoVal>vibThd) {
-    //      Serial.println("touch detected");
-      reward(rewardSolenoid,40);
-      delay(500);
+    if (trialInit==0){
+      Serial.println("initialize on first loop");
+      trialMillis = millis();
+      sendTTL(trialTTLPin,1); // send TTL : begin trial
+      trialCount=trialCount+1; //increment trial number
+      // sendToPC(trialCount,int(trialType),rewardCount);
+      trialInit=1;
+    } else {
+      // Serial.println("waiting for licks");
+      if (touchPiezo()){
+           rewardCount=rewardCount+1;
+           reward(rewardSolenoid,rewardDuration); // 40 calibrated to 1ul
+           sendtoPC(trialCount,int(trialType),int(trialOutcome),rewardCount); // result of current trial
+           trialwrapup(interTrialInterval/4);
+           sendTTL(trialTTLPin,0); // end of trial
+      }
     }
   }
 }
 
-void readbuttons() {
- buttonBWpressed = false;
- buttonFWpressed = false;
-
- if (digitalRead(joyBehaviorPin) == HIGH) {
-   railControl = true;
-   initialization = false;
- } else {
-   railControl = false;
-   initialization = true;
- }
-
- if (digitalRead(buttonFWpin) == HIGH) {
- // buttonFWpressed = true;
- // Serial.println("Forward");
- }
- if (digitalRead(buttonBWpin) == HIGH) {
- // buttonBWpressed = true;
- // Serial.println("Backward");
- }
-
- if  (digitalRead(sessionStart) == HIGH) {
-   sessionStatus[0]=1; // session is ON!
- }
-
+bool readbuttons() {
+  // Serial.println("Track 2");
+ // buttonBWpressed = false;
+ // buttonFWpressed = false;
+ if ((digitalRead(joyBehaviorPin) == HIGH) || (digitalRead(redButton) == HIGH)) {
+   if (digitalRead(joyBehaviorPin) == HIGH) {
+    //  Serial.println("joyBehavior push button ON"); // Green button
+     railControl = true;
+     initialization = false;
+     if  (digitalRead(redButton) == HIGH) { // both buttons pressed
+       Serial.println("Manual override. Session is ON!"); // Red button also pressed
+       sessionStatus[0]=1;
+     }
+   }
+   if  (digitalRead(redButton) == HIGH) {
+     railControl = false;
+     initialization = true;
+   }
+   return (true);
+   } else {
+     if  (digitalRead(redButton) == LOW) {
+       flushtubes = false;
+     }
+     return (false);
+  }
 }
 
 void actonbuttons() {
+  // Serial.println("Track 3");
  if (railControl == true) {
    digitalWrite(enablePin_SM1, HIGH);
    // adjusting initial AP location
    if (digitalRead(buttonFWpin) == HIGH) { //(buttonFWpressed == true) {
     //  digitalWrite(directionPin_SM1, LOW);
-     moverail(railMotorSpeed,LOW,100);
+     moverail(-railMotorSpeed,LOW,100);
    } else if (digitalRead(buttonBWpin) == HIGH) { //(buttonBWpressed == true) {
       // digitalWrite(directionPin_SM1, HIGH);
-      moverail(-railMotorSpeed,HIGH,100);
+      moverail(railMotorSpeed,HIGH,100);
     }
+    digitalWrite(enablePin_SM1, LOW);
  }
  if (initialization == true) {
    // Define current panel angle as 0
@@ -237,33 +130,47 @@ void actonbuttons() {
    // set up first trial
     if (digitalRead(buttonFWpin) == HIGH) { //(buttonFWpressed == true) {
       trialwrapup(2000);
-    }
+    } else if (digitalRead(buttonBWpin) == HIGH) {
    // or flush reward
-     while (digitalRead(buttonBWpin) == HIGH){
-       readbuttons();
-       flushTubing();
+   flushtubes = true;
+       while (flushtubes == true){
+         Serial.println("flush tubes");
+         readbuttons();
+         flushtubing();
+       }
      }
    }
 }
 
 void moverail(int speed, unsigned char direction, int duration) {
- // railMotion = true;
- digitalWrite(directionPin_SM1, direction);
- digitalWrite(enablePin_SM1, HIGH);
- startLinearMoveTime=millis();
- while ((startLinearMoveTime+duration)>millis()){
-   railStepper.setSpeed(speed);
-   railStepper.runSpeed();
+  if (isRailRetracted()==true) {
+    // stop and move forward a bit
+    digitalWrite(directionPin_SM1, LOW);
+    digitalWrite(enablePin_SM1, HIGH);
+    while (isRailRetracted()==true){
+      railStepper.setSpeed(-railMotorSpeed);
+      railStepper.runSpeed();
+    }
+  } else {
+   // railMotion = true;
+   digitalWrite(directionPin_SM1, direction);
+   digitalWrite(enablePin_SM1, HIGH);
+   startLinearMoveTime=millis();
+   while ((startLinearMoveTime+duration)>millis()){
+     railStepper.setSpeed(speed);
+     railStepper.runSpeed();
+   }
  }
- digitalWrite(enablePin_SM1, LOW);
+ // digitalWrite(enablePin_SM1, LOW);
  // railMotion = false;
 }
 
-boolean trialready() {
+bool trialready() {
   if (trialInit==0) { // only run checks if trial is not ongoing
   // check if panel is retracted
-      railMovedBack = isRailRetracted();
-    return (railMovedBack && stimShuffle);
+      // railMovedBack = isRailRetracted();
+    // return (railMovedBack && stimShuffle);
+    return (stimShuffle);
   } else {
     return (true);
   }
@@ -317,16 +224,36 @@ void sendTTL(int TTLpin, int instruct){
   }
 }
 
-int maxdiffanalog(){
-  unsigned int maxVal=0;
-  unsigned int minVal=1024;
-
-  for(int i = 0; i < sampleWindowSize ; ++i){
-    piezoVal = analogRead(piezoPin);
-    minVal = min(minVal, piezoVal);
-    maxVal = max(maxVal, piezoVal);
+bool touchPiezo(){
+  lowpassFilter.input( analogRead( piezoPin ) );
+  centeredVal=abs(lowpassFilter.output()-sampleTouch.mean());
+  sampleTouch.push(centeredVal);
+  // Serial.print(centeredVal);
+  SNR = max((sampleTouch.mean()/(max(sampleTouch.stddev(),0.01))),1);
+  // Serial.print("\t");
+  // Serial.println(5*SNR);
+  cumulativeTouch<<=1;
+  if (centeredVal>(SNRthreshold*SNR)){
+    // detect.push(1);
+    cumulativeTouch = cumulativeTouch | 1;
+    //    Serial.println("above SNR");
+  } else {
+    // detect.push(0);
+    cumulativeTouch = cumulativeTouch | 0;
   }
-  return abs(maxVal-minVal);
+  //  Serial.println(cumulativeTouch & mask);
+  if ((cumulativeTouch & mask) == mask && ((millis()-touchTime)>lickInterval)){//((detect.mean()*4)>=2) {
+    // Serial.print("Touch detected with mean value ");
+    // Serial.println(sampleTouch.mean());
+    Serial.print(centeredVal);
+    Serial.print("\t");
+    Serial.println(5*SNR);
+    // sampleTouch.clear();
+    touchTime = millis(); //keep track of time
+    return(true);
+  } else {
+    return(false);
+  }
 }
 
 void reward(Adafruit_DCMotor* solenoid,int dur){
@@ -390,33 +317,21 @@ void soundout(int instruct){
    }
 }
 
-void trialwrapup(int timeout){ // needs to happen after sendToPC() command
-  if (trialselectMode==2){ // block trials
-    // time to move trial position one up (ie, setting up next trial type)
-    blockPos++;
-    if (blockPos>blockSize){
-      trialType++;
-    }
-    if (trialType>5){
-      trialType=1;
-    }
-  }
-  soundout(1); // white noise mask
-  moverail(railMotorSpeed, HIGH, 1000); // HIGH = retract panel
-  while (isRailRetracted()==false) {
-    delay(1);
-  }
-  trialselection(); // set for next trial
+void trialwrapup(unsigned int timeout){ // needs to happen after sendToPC() command
   trialInit=0;
   // refractory period
-  delay(timeout); // timeout to leave time for 2s white noise + extra timeout if wrong trial
+  countDown = millis();
+  while (millis()-countDown<timeout){// timeout to leave time for 2s white noise + extra timeout if wrong trial
+    touchPiezo();
+  };
 }
 
-boolean isRailRetracted() {
+bool isRailRetracted() {
   if (digitalRead(railPosIRpin) == HIGH) {
-    return false;
-  } else {
+    // Serial.println("rail retracted");
     return true;
+  } else {
+    return false;
   }
 }
 
@@ -452,8 +367,8 @@ void trialselection(){
 
   //   digitalWrite(sleepPin_SM2, LOW);
   currentTrialType = nextTrialType;
-  // Serial.print("currentTrialType is now ");
-  // Serial.println(currentTrialType);
+  Serial.print("currentTrialType is now ");
+  Serial.println(currentTrialType);
   stimShuffle=true;
 }
 
@@ -517,8 +432,8 @@ void parsedata() {
   }
 }
 
-void flushTubing(){
-  Serial.println("flush");
+void flushtubing(){
+  // Serial.println("flush");
   // flush left
   rewardSolenoid->run(FORWARD);
   rewardSolenoid->setSpeed(255);
