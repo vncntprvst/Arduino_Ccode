@@ -2,7 +2,7 @@
 // rotates stimulus between trial with random permutations
 // monitor lick sensor
 // deliver reward
-// deliver air puff
+// deliver air puff (tbd - just timeout for now)
 
 //dependencies
   // important ones:

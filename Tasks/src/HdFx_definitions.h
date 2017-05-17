@@ -4,10 +4,11 @@
 bool readbuttons();
 void actonbuttons();
 void moverail(int speed, unsigned char direction, int duration);
+// void moverailtrial(long relativePos);
 void getdatafromPC();
 void parsedata();
 bool trialready();
-void trialwrapup(unsigned int timeout);
+void trialwrapup(unsigned int iti);
 void flushtubing();
 void sendTTL(int TTLpin, int instruct);
 bool touchPiezo();
@@ -55,7 +56,7 @@ Adafruit_DCMotor *puffSolenoid = AFMS.getMotor(2);
 
 // lick sensor variables
 #define piezoPin A0
-#define lickTTLPin 21
+#define lickTTLPin 22
 float filterFrequency = 10.0; // filters out changes faster that 10 Hz.
 FilterOnePole lowpassFilter( LOWPASS, filterFrequency );  // create a one pole (RC) lowpass filter
 Average<long> sampleTouch(10);
@@ -67,28 +68,31 @@ unsigned long touchTime = 0;
 #define lickInterval 100 // adjust to constraint max allowed lick frequency
 #define rewardDuration 80 // 40 calibrated to 1ul
 #define SNRthreshold 4
-
 // byte baseline = 1;
-unsigned int piezoVal; // max 1024
 unsigned int maxDiff;
+unsigned int piezoVal; // max 1024
 unsigned int lickCount = 0;
 
 // session and trial variables
 #define redButton 17 // for manual override
-#define trialTTLPin 7
-#define interTrialInterval 2000
+bool overRideState = false;
+#define trialTTLPin 46
+#define interTrialInterval 1000 // 2s to retract stim plus 1s to rotate it
+                                // actually right now the code waits for the panel to be fully retracted
+unsigned short timeOut = 0;
+#define railDisplacement 2000
 unsigned long trialMillis = 0;
 byte trialselectMode=0; // 0 -> randomized trials
                         // 1 -> trial-by-tria instrucitons from computer
                         // 2 -> block trial preset (see trialselection).
 byte blockSize=15; // this is the number of trials in each block
 byte blockPos=1; // where we are in the block of trials
-byte trialType = 0;
 byte sessionStatus[2] = {0, 0}; // 1/ Run [ON/OFF (1/0)] 2/ Reset (1)
 byte trialOutcome=0;
 unsigned int trialCount=0;
 unsigned int trialInit=0;
-unsigned int gracePeriod=1000;
+unsigned int responseInit=0;
+unsigned int gracePeriod=2000;
 unsigned int responseWindow=1000;
 unsigned int rewardCount=0;
 bool railMovedBack=false;
@@ -96,13 +100,13 @@ bool stimShuffle=false;
 
 // texture panel definitions
 #define railPosIRpin 15
-int currentTrialType=0; // inital panel position
+int currentTrialType=1; // inital panel position
 int nextTrialType;
 byte rot_seq; // number of panel rotations
 int rotationAngle;
 
 // audio definitions
-#define soundTriggerPin 6 // audio output
+#define soundTriggerPin 50 // audio output
 
 // GUI-related variables
 const byte buffSize = 40;
