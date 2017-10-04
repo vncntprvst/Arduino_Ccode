@@ -64,6 +64,7 @@
 // reward and lick sensor variables
   #define piezoPin A0
   #define lickTTLPin 21
+  #define soundPin 30
   float filterFrequency = 10.0; // filters out changes faster that 10 Hz.
   FilterOnePole lowpassFilter( LOWPASS, filterFrequency );  // create a one pole (RC) lowpass filter
   Average<long> sampleTouch(50);
@@ -210,11 +211,12 @@ void loop() {
     } else {
       // Serial.println("waiting for licks");
       if (touchPiezo()){
-           rewardCount=rewardCount+1;
-           reward(rewardSolenoid,rewardDuration); // 40 calibrated to 1ul
-           sendtoPC(trialCount,int(trialType),int(trialOutcome),rewardCount); // result of current trial
-           trialwrapup(interTrialInterval/4);
-           sendTTL(trialTTLPin,0); // end of trial
+         tone(soundPin, 262, 100);
+         rewardCount=rewardCount+1;
+         reward(rewardSolenoid,rewardDuration); // 40 calibrated to 1ul
+         sendtoPC(trialCount,int(trialType),int(trialOutcome),rewardCount); // result of current trial
+         trialwrapup(interTrialInterval/4);
+         sendTTL(trialTTLPin,0); // end of trial
       }
     }
   }
